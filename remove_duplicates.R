@@ -2,7 +2,7 @@
 # Remove duplicate rows (posts) from CrowdTangle data
 # Code author Irene Morse (UMich)
 # Tested on data from Dr. Justine Davis (UMich)
-# Last modified 29 April 2021
+# Last modified 6 May 2021
 #########################################################################
 # When CrowdTangle data is downloaded at different points in time and merged,
 # duplicate rows/posts are somtimes introduced.
@@ -10,15 +10,22 @@
 # In the data they generally differ on certain dimensions other than URL.
 # For example, a post may receive more likes or shares over time.
 # This code allows you to examine and delete such duplicates,
-# using user-defined criteria.
+# based on total likes and one user-defined criterion.
+
+# You can also set an acceptable threshold for differences in likes
+# using the likes_diff parameter (default is 1).
+# The user-defined criterion is defined through the crit_var parameter
+# and it must a variable that can be ordered (e.g. Shares, Date).
 #########################################################################
 
 # Step 1: Collect all duplicate posts for examination
 CollectDuplicates <- function(dataframe) {
   dataframe$duplicateURL <- duplicated(dataframe$URL)
   cat('There are ', sum(dataframe$duplicateURL), ' duplicate rows/posts.')
+  if(sum(dataframe$duplicateURL)==0){
+    return(list())
+  }
   print('Process updates: ')
-  
   Duplicates <- list()
   elem <- 1
   for(i in 1:nrow(dataframe)){
@@ -62,14 +69,14 @@ ExamineDuplicates <- function(Duplicates, dataframe){
   return(Changed)
 }
 
-# Step 3: Identify duplicates to keep/delete based on text and 2 additional criteria
-
-# next stage:
-# 1. check if all_likes and download date line up (more likes, later date)
-# 2. if so, delete earlier one
-# 3. if not, collect these indices for further examination
-
-SortDuplicates <- function(Duplicates, dataframe, text_var, crit1_var, crit2_var) {
+# Step 3: Identify duplicates to keep/delete based on text, likes and 1 additional criterion
+SortDuplicates <- function(Duplicates, dataframe, text_var, crit_var, likes_diff = 1){
+  # create all_likes if it doesn't exist already
+  if(!("all_likes" %in% colnames(dataframe))){
+    dataframe$all_likes <- fulldata$Likes + fulldata$Love + fulldata$Wow + 
+      fulldata$Haha + fulldata$Sad + fulldata$Angry + fulldata$Care
+    print("all_likes variable created.")
+  }
   print("Process updates: ")
   to_keep <- vector()
   to_delete <- vector()
@@ -78,23 +85,38 @@ SortDuplicates <- function(Duplicates, dataframe, text_var, crit1_var, crit2_var
     elems <- Duplicates[[i]]
     text_var_nchar <- nchar(dataframe[elems,text_var])
     if((0 %in% text_var_nchar) & (sum(text_var_nchar) != 0)){
+      # if one text var is empty but others are not empty
+      # delete the row with the empty text var
       idx_del <- which(text_var_nchar == 0)
       to_delete <- c(to_delete, elems[idx_del])
+      # for remaining elems check all_likes and criterion
       elems_left <- elems[-idx_del]
-      most_likes <- which(dataframe[elems_left, crit1_var] == dataframe[elems_left, crit1_var])
-      latest_dd <- which(dataframe[elems_left, crit2_var] == dataframe[elems_left, crit2_var])
-      if(unique(most_likes==latest_dd)){
-        to_keep <- c(to_keep, elems_left[1])
-        to_delete <- c(to_delete, elems_left[-1])
+      order1 <- elems_left[order(dataframe[elems_left, "all_likes"])]
+      order2 <- elems_left[order(dataframe[elems_left, crit_var])]
+      if(unique(order1==order2)==TRUE){
+        # if most_likes and criterion line up, keep based on either variable
+        to_keep <- c(to_keep, order1[length(order1)])  ## order1 or order2 is fine
+        to_delete <- c(to_delete, order1[-length(order1)])  ## order1 or order2 is fine
+      }else if(max(dataframe[elems_left, "all_likes"]) - min(dataframe[elems_left, "all_likes"]) <= likes_diff){
+        # if difference in likes is minimal, keep based on criterion
+        to_keep <- c(to_keep, order2[length(order2)])  ## must be order2
+        to_delete <- c(to_delete, order2[-length(order2)])  ## must be order2
       }else{
         unsure <- c(unsure, elems_left)
       }
-    }else if(!(0 %in% text_var_nchar) | (sum(text_var_nchar) == 0)){
-      most_likes <- which(dataframe[elems, crit1_var] == dataframe[elems, crit1_var])
-      latest_dd <- which(dataframe[elems, crit2_var] == dataframe[elems, crit2_var])
-      if(unique(most_likes==latest_dd)){
-        to_keep <- c(to_keep, elems[1])
-        to_delete <- c(to_delete, elems[-1])
+    }else if((!(0 %in% text_var_nchar)) | (sum(text_var_nchar) == 0)){
+      # if one text var is empty but others are not empty
+      # check all_likes and criterion
+      order1 <- elems[order(dataframe[elems, "all_likes"])]
+      order2 <- elems[order(dataframe[elems, crit_var])]
+      if(unique(order1==order2)==TRUE){
+        # if most_likes and criterion line up, keep based on either variable
+        to_keep <- c(to_keep, order1[length(order1)])  ## order1 or order2 is fine
+        to_delete <- c(to_delete, order1[-length(order1)])  ## order1 or order2 is fine
+      }else if(max(dataframe[elems, "all_likes"]) - min(dataframe[elems, "all_likes"]) <= likes_diff){
+        # if difference in likes is minimal, keep based on criterion
+        to_keep <- c(to_keep, order2[length(order2)])  ## must be order2
+        to_delete <- c(to_delete, order2[-length(order2)])  ## must be order2
       }else{
         unsure <- c(unsure, elems)
       }
@@ -106,15 +128,15 @@ SortDuplicates <- function(Duplicates, dataframe, text_var, crit1_var, crit2_var
   }
   
   # check that everything is accounted for
-  if(sum(unlist(lapply(Duplicates, length))) == (length(to_delete)+length(to_keep)+sum(unlist(lapply(lapply(unsure, '[', 1), length))))){
-    "Check 1 TRUE"
+  if(sum(unlist(lapply(Duplicates, length))) == (length(to_delete)+length(to_keep)+length(unsure))){
+    print("Check 1 TRUE")
   }else{
-    "Check 1 FALSE. There is an issue."
+    print("Check 1 FALSE. There is an issue.")
   }
-  if(length(Duplicates) == length(SortedElements$to_keep)){
-    "Check 2 TRUE"
+  if(length(Duplicates) == length(to_keep)){
+    print("Check 2 TRUE")
   }else{
-    "Check 2 FALSE. There is an issue."
+    print("Check 2 FALSE. There is an issue.")
   }
   
   SortedElements <- list('to_delete'=to_delete, 'to_keep'=to_keep, 'unsure'=unsure)
@@ -137,12 +159,15 @@ DeleteDuplicates <- function(dataframe, SortedElements){
 
 # load data as dataframe
 setwd('E://Project with Justine Davis')
-fulldata <- read.csv('CrowdTangle_01012015-12012020-emojis_V3.csv', row.names = FALSE)
+fulldata <- read.csv('CrowdTangle_01012015-12012020-emojis_V3.csv')
 
 # Step 1
 Duplicates <- CollectDuplicates(fulldata)
 # check length of duplicate groups
 unique(unlist(lapply(Duplicates, length)))  ## all are pairs or triples (2 or 3)
+sum(unlist(lapply(Duplicates, length)))
+#save(Duplicates, file = 'Duplicates')  ## to avoid having to rerun this slow thing
+#load('Duplicates')
 
 # Step 2
 Changed <- ExamineDuplicates(Duplicates, fulldata)
@@ -184,12 +209,14 @@ print(unique(out))
 fulldata$Created <- strptime(fulldata$Created, format = "%Y-%m-%d %T")
 fulldata$Created <- as.POSIXct(fulldata$Created)
 fulldata$download_date <- as.Date(fulldata$download_date, format = "%m-%d-%Y")
-SortedElements <- SortDuplicates(Duplicates, fulldata, 'message2', 
-                                 'all_likes', 'download_date')
+# check if all_likes and download date line up (more likes, later date)
+# if so, delete earlier one
+SortedElements <- SortDuplicates(Duplicates, fulldata, 'message3', 'download_date', likes_diff = 2)
 
 # Step 4
 fulldata_noduplicates <- DeleteDuplicates(fulldata, SortedElements)
 should_be_empty_now <- CollectDuplicates(fulldata_noduplicates)
+print(should_be_empty_now)
 
 # save
 write.csv(fulldata_noduplicates, file = 'CrowdTangle_01012015-12012020-emojis_V3_nodups.csv', row.names = FALSE)
